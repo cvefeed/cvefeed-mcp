@@ -1,0 +1,148 @@
+name: Release cvefeed-mcp to PyPI
+
+# Publishes the package on PyPI when a ``v*`` tag is pushed. The ``cvefeed-mcp``
+# name on PyPI is bound to this workflow via Trusted Publishing (OIDC), so there
+# is no long-lived API token to rotate.
+#
+# ONE-TIME SETUP (required before the first tag push):
+#
+# 1. On PyPI, signed in as the maintainer account: Account settings → Publishing
+#    → Add a pending publisher:
+#       PyPI Project Name: cvefeed-mcp
+#       Owner:             cvefeed
+#       Repository name:   cvefeed-mcp
+#       Workflow filename: release.yml
+#       Environment name:  pypi
+#    Once the first release succeeds PyPI promotes this from pending to a real
+#    publisher attached to the project.
+#
+# 2. On GitHub → Settings → Environments → create ``pypi`` (no secrets needed).
+#
+# After that, cut a release with:
+#       git tag v0.1.0 && git push origin v0.1.0
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Lint + test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install with dev extras
+        run: pip install -e ".[dev]"
+
+      - name: Lint
+        run: |
+          ruff check cvefeed_mcp/ tests/
+          ruff format --check cvefeed_mcp/ tests/
+
+      - name: Run tests
+        run: pytest -q
+
+  build:
+    name: Build sdist and wheel
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build backend
+        run: pip install --upgrade build
+
+      - name: Verify tag matches pyproject version
+        # Tag ``v0.1.0`` must match ``version = "0.1.0"`` in pyproject.toml.
+        # Catches the "I bumped the tag but forgot the package version" mistake.
+        run: |
+          python - <<'PY'
+          import os, sys, tomllib
+          from pathlib import Path
+
+          tag = os.environ["GITHUB_REF_NAME"]  # e.g. v0.1.0
+          if not tag.startswith("v"):
+              sys.exit(f"tag {tag!r} must start with 'v'")
+          tag_version = tag[1:]
+
+          pyproject = tomllib.loads(Path("pyproject.toml").read_text())
+          pkg_version = pyproject["project"]["version"]
+
+          if tag_version != pkg_version:
+              sys.exit(
+                  f"tag version {tag_version!r} does not match pyproject version {pkg_version!r}"
+              )
+          print(f"ok: {tag} matches pyproject version {pkg_version}")
+          PY
+
+      - name: Build distributions
+        run: python -m build
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: cvefeed-mcp-dist
+          path: dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      # OIDC token for Trusted Publishing — no API token secret needed.
+      id-token: write
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: cvefeed-mcp-dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+
+  release-notes:
+    name: Create GitHub Release
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: cvefeed-mcp-dist
+          path: dist/
+
+      - name: Create release with built artifacts
+        uses: softprops/action-gh-release@v2
+        with:
+          name: cvefeed-mcp ${{ github.ref_name }}
+          generate_release_notes: true
+          files: dist/*
