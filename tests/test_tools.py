@@ -143,7 +143,7 @@ class TestToolInvocation:
             raise AssertionError("tool must reject invalid cve_id before HTTP")
 
         server = server_with_handler(handler)
-        with pytest.raises(Exception, match="(?i)pattern|invalid|string_pattern"):
+        with pytest.raises(Exception, match=r"(?i)pattern|invalid|string_pattern"):
             await call_tool(server, "get_cve_detail", {"cve_id": "../../etc/passwd"})
 
     async def test_run_cveql_query_execute_vs_validate(self, server_with_handler):
